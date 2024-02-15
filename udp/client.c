@@ -14,10 +14,17 @@ uint64_t get_cur_ns();
 int compare_uint64(const void *a, const void *b);
 void *tx_thread(void *arg);
 void *rx_thread(void *arg);
+void read_latency_from_file(uint64_t *latencies, const char *filename);
+void write_latency_to_file(uint64_t latency, const char *filename);
 
 // 전역변수
 int TARGET_QPS, send_time, WRatio;
 int VALUE_SIZE = 128;
+uint64_t all_latencies[MAX_LATENCIES]; // 각 스레드의 레이턴시를 저장하는 배열
+int all_latency_count = 0; // 모든 스레드의 레이턴시 개수를 추적하는 변수
+int MAX_FILENAME_LENGTH = 256;
+int MAX_LATENCIES = 10000000;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // 메시지 헤더 구조체 정의 
 #pragma pack(1)
@@ -35,6 +42,19 @@ struct sock_args {
 	int cli_addr_len;
 };
 
+/* Get current time in nanosecond-scale */
+uint64_t get_cur_ns() {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  uint64_t t = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
+  return t;
+}
+
+//비교 함수(qsort를 사용하여 99th-tail latency를 구하기 위함)
+int compare_uint64(const void *a, const void *b) {
+	return (*(uint64_t *)a - *(uint64_t *)b);
+}
+
 // 파일에 latency 기록
 void write_latency_to_file(uint64_t latency, const char *filename) {
     FILE *fp = fopen(filename, "a"); // "a" 모드를 사용하여 파일 끝에 이어쓰기 모드로 열기
@@ -47,17 +67,21 @@ void write_latency_to_file(uint64_t latency, const char *filename) {
     fclose(fp);
 }
 
-/* Get current time in nanosecond-scale */
-uint64_t get_cur_ns() {
-  struct timespec ts;
-  clock_gettime(CLOCK_REALTIME, &ts);
-  uint64_t t = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
-  return t;
-}
+// 파일에서 latency를 읽어오고 정렬하여 배열에 저장
+void read_latency_from_file(uint64_t *latencies, const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
 
-//비교 함수(qsort를 사용하여 99th-tail latency를 구하기 위함)
-int compare_uint64(const void *a, const void *b) {
-	return (*(uint64_t *)a - *(uint64_t *)b);
+	int i = 0;
+    while (fscanf(fp, "%lu", &latencies[i]) != EOF) {
+    	all_latency_count++;
+		i++;
+    }
+
+    fclose(fp);
 }
 
 // 랜덤 문자열(value)을 생성하는 함수
@@ -119,10 +143,15 @@ void *tx_thread(void *arg) {
 	return NULL;
 }
 
+
 void *rx_thread(void *arg) {
 	struct sock_args *args = (struct sock_args *)arg;
 	// 답신의 latency를 저장할 배열
-	uint64_t latencies[send_time * TARGET_QPS];
+	//uint64_t latencies[c];
+	char filename[MAX_FILENAME_LENGTH];
+
+	// 각 스레드마다 다른 파일 이름 생성
+	snprintf(filename, MAX_FILENAME_LENGTH, "latency_%lu.txt", pthread_self()); 
 
 	bool continue_processing = true;
 	while (continue_processing) {
@@ -133,27 +162,23 @@ void *rx_thread(void *arg) {
 			uint64_t latency = get_cur_ns() - reply_hdr.time;
 
 			// 파일에 latency 기록
-			write_latency_to_file(latency, "latency.txt");
-			
+			write_latency_to_file(latency, filename);
+
 			printf("%d 번째 요청 수신\n", i + 1);
 		}
+		
+        pthread_mutex_lock(&mutex);
+		read_latency_from_file(all_latencies, filename);
+		pthread_mutex_unlock(&mutex);
 
-		// latency 정렬
-		qsort(latencies, send_time * TARGET_QPS, sizeof(uint64_t), compare_uint64);
-
-		// 평균 latency 계산
-		uint64_t total_latency = 0;
-		for (int i = 0; i < send_time * TARGET_QPS; i++) 
-			total_latency += latencies[i];
-		double avg_latency = (double)total_latency / send_time * TARGET_QPS;
-
-		// 결과 출력
-		printf("Average latency: %.2lf nanoseconds\n", avg_latency);
-		printf("50th percentile latency: %lu nanoseconds\n", latencies[(int)(0.5 * send_time * TARGET_QPS)]);
-		printf("99th percentile latency: %lu nanoseconds\n", latencies[(int)(0.99 * send_time * TARGET_QPS)]);
-	
 		continue_processing = false;
 	}
+
+	// 평균 latency 계산
+	// uint64_t total_latency = 0;
+	// for (int i = 0; i < latency_count; i++) 
+	// 	total_latency += latencies[i];
+	// double avg_latency = (double)total_latency / latency_count;
 
 	return NULL;
 }
@@ -201,7 +226,17 @@ int main(int argc, char *argv[]) {
 	pthread_join(tx, NULL);
 	pthread_join(rx, NULL);
 
+	 // 모든 스레드가 종료되면 모든 레이턴시를 정렬
+    qsort(all_latencies, all_latency_count, sizeof(uint64_t), compare_uint64);
+
+    // 결과 출력
+    printf("50th percentile latency: %lu nanoseconds\n", all_latencies[(int)(0.5 * all_latency_count)]);
+    printf("99th percentile latency: %lu nanoseconds\n", all_latencies[(int)(0.99 * all_latency_count)]);
 
 	close(sock);
+	
+    // mutex 해제
+    pthread_mutex_destroy(&mutex);
+
 	return 0;
 }
