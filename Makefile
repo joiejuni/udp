@@ -1,16 +1,12 @@
-all: client.out server.out
-
-client.out : client.o
-	gcc -o client.out client.o
-
+all: client server
 client.o : client.c
-	gcc -c -o client.o client.c
-
-server.out : server.o
-	gcc -o server.out server.o
-
-server.o : server.c
-	gcc -c -o server.o server.c
-
+	$(CC) -c client.c
+client: client.o
+	$(CC) -o client client.o -lpthread -lm -D_GNU_SOURCE -lgsl -lgslcblas
+server.o: server.c
+	$(CC) -c server.c
+server: server.o
+	$(CC) -o server server.o -D_GNU_SOURCE -lhiredis
 clean:
-	rm *.o client.out server.out
+	rm *.o client server
+
