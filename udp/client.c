@@ -35,6 +35,18 @@ struct sock_args {
 	int cli_addr_len;
 };
 
+// 파일에 latency 기록
+void write_latency_to_file(uint64_t latency, const char *filename) {
+    FILE *fp = fopen(filename, "a"); // "a" 모드를 사용하여 파일 끝에 이어쓰기 모드로 열기
+    if (fp == NULL) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
+
+    fprintf(fp, "%lu\n", latency);
+    fclose(fp);
+}
+
 /* Get current time in nanosecond-scale */
 uint64_t get_cur_ns() {
   struct timespec ts;
@@ -118,7 +130,11 @@ void *rx_thread(void *arg) {
 		for (int i = 0; i < send_time * TARGET_QPS; i++) {
 			recvfrom(args->sock, &reply_hdr, sizeof(struct myheader), 0, (struct sockaddr *)&(args->srv_addr), &(args->cli_addr_len));
 
-			latencies[i] = get_cur_ns() - reply_hdr.time;
+			uint64_t latency = get_cur_ns() - reply_hdr.time;
+
+			// 파일에 latency 기록
+			write_latency_to_file(latency, "latency.txt");
+			
 			printf("%d 번째 요청 수신\n", i + 1);
 		}
 
