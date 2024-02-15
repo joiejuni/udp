@@ -8,13 +8,22 @@
 #include <hiredis/hiredis.h>
 #include <time.h>
 
+int VALUE_SIZE = 128;
+
+uint64_t get_cur_ns();
+int put(redisContext *c,  uint32_t key, uint64_t value);
+char* get(redisContext *c, uint32_t key);
+void generate_random_value(char *value, size_t length);
+void generateDataset(redisContext *c, int random_key_size);
+
 //메시지 헤더 구조체 정의
 #pragma pack(1)
 struct myheader_hdr {
-    uint32_t op;      // 4바이트 unsigned int
-    uint32_t key;     // 4바이트 unsigned int
-    uint64_t value;   // 8바이트 unsigned long long
+    bool isRead = true;
+    uint64_t key;     // 4바이트 unsigned int
+    char value[128]; 
     uint64_t latency; // 8바이트 unsigned long long
+	uint64_t time;
 } __attribute__((packed));
 
 /* Get current time in nanosecond-scale */
@@ -50,9 +59,24 @@ char* get(redisContext *c, uint32_t key) {
     return value;
 }
 
-void generateKeyValues(redisContext *c, int random_key_size) {
+// 랜덤 문자열(value)을 생성하는 함수
+void generate_random_value(char *value, size_t length) {
+    static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    srand((unsigned int)time(NULL));
+    for (size_t i = 0; i < length - 1; ++i) {
+        int index = rand() % (int)(sizeof(charset) - 1);
+        value[i] = charset[index];
+    }
+    value[length - 1] = '\0'; // 문자열 종료를 나타내는 널 문자 추가
+}
+
+// key-value 생성하여 db에 저장
+void generateDataset(redisContext *c, int random_key_size) {
+	char value[VALUE_SIZE];
+	
     for (int i = 0; i < random_key_size; i++) {
-        put(c, rand() % 100000, rand() % 100000); 
+        put(c, rand() % 1000000, value); // value 배열 자체가 주소이므로 &를 안 붙여도 됨
     }
 }
 
@@ -100,9 +124,9 @@ int main(int argc, char *argv[]) {
   	struct myheader_hdr SendBuffer;
 
 	// 서버 실행 시 임의의 키-값 데이터를 생성한다
-	// 키 개수: 10만개, 키 범위: 0~99999
-	int random_key_size = 100000;
-	generateKeyValues(redis_context, random_key_size);
+	// 키 개수: 100만개, 키 범위: 0~999999
+	int random_key_size = 1000000;
+	generateDataset(redis_context, random_key_size);
 	
 
 	while (1) {
@@ -113,19 +137,21 @@ int main(int argc, char *argv[]) {
 			uint64_t value;
 
 			// SendBuffer op, key, value를 클라이언트로부터 받은 것과 동일하게 초기화
-			SendBuffer.op = RecvBuffer.op;
+			SendBuffer.isRead = RecvBuffer.isRead;
 			SendBuffer.key = RecvBuffer.key;
 			SendBuffer.value = RecvBuffer.value;
 
-			if (RecvBuffer.op) { // 쓰기이면
-				put(redis_context, RecvBuffer.key, RecvBuffer.value);
-			} else {// 읽기이면
+			if (RecvBuffer.isRead) { // 읽기이면
 				value = get(redis_context, RecvBuffer.key);
 				SendBuffer.value = value;
 				free(value);
-			}
+			} 
+			else // 쓰기이면
+				put(redis_context, RecvBuffer.key, RecvBuffer.value);
+			
         } 
 		SendBuffer.latency = get_cur_ns();
+		SendBuffer.time = RecvBuffer.time;
 		sendto(sock, &SendBuffer, sizeof(SendBuffer), 0, (struct sockaddr *)&cli_addr, sizeof(cli_addr));
 	}
 	close(sock);

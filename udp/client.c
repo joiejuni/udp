@@ -17,13 +17,14 @@ void *rx_thread(void *arg);
 
 // 전역변수
 int TARGET_QPS, send_time, WRatio;
+int VALUE_SIZE = 128;
 
 // 메시지 헤더 구조체 정의 
 #pragma pack(1)
 struct myheader {
-    uint32_t op;      // 4바이트 unsigned int
-    uint32_t key;     // 4바이트 unsigned int
-    uint64_t value;   // 8바이트 unsigned long long
+    bool isRead = true; // 쓰기보다 읽기 요청이 더 많으므로 read일 때를 true로 설정
+    uint64_t key;     // 4바이트 unsigned int
+    char value[VALUE_SIZE];  // 128바이트 문자열
     uint64_t latency; // 8바이트 unsigned long long
 	uint64_t time;
 } __attribute__((packed));
@@ -45,6 +46,18 @@ uint64_t get_cur_ns() {
 //비교 함수(qsort를 사용하여 99th-tail latency를 구하기 위함)
 int compare_uint64(const void *a, const void *b) {
 	return (*(uint64_t *)a - *(uint64_t *)b);
+}
+
+// 랜덤 문자열(value)을 생성하는 함수
+void generate_random_value(char *value, size_t length) {
+    static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    srand((unsigned int)time(NULL));
+    for (size_t i = 0; i < length - 1; ++i) {
+        int index = rand() % (int)(sizeof(charset) - 1);
+        value[i] = charset[index];
+    }
+    value[length - 1] = '\0'; // 문자열 종료를 나타내는 널 문자 추가
 }
 
 void *tx_thread(void *arg) {
@@ -82,12 +95,11 @@ void *tx_thread(void *arg) {
 		while (get_cur_ns() < temp_time); 
 
 		// 여기에 패킷 보내는 코드 추가
-		hdr.key = rand() % 100000;
+		hdr.key = rand() % 1000000;
 		if (rand() % 100 < WRatio) { //쓰기이면
-			hdr.op = 1;
-			hdr.value = rand() % 100000;
-		} 
-		else hdr.op = 0; // 읽기이면
+			hdr.isRead = 0;
+			hdr.value = generate_random_value(hdr.value, VALUE_SIZE);
+		}
 		
 		hdr.time = get_cur_ns();
 		sendto(args->sock, &hdr, sizeof(struct myheader), 0, (struct sockaddr *)&(args->srv_addr), sizeof(args->srv_addr));
@@ -121,6 +133,7 @@ void *rx_thread(void *arg) {
 
 		// 결과 출력
 		printf("Average latency: %.2lf nanoseconds\n", avg_latency);
+		printf("50th percentile latency: %lu nanoseconds\n", latencies[(int)(0.5 * send_time * TARGET_QPS)]);
 		printf("99th percentile latency: %lu nanoseconds\n", latencies[(int)(0.99 * send_time * TARGET_QPS)]);
 	
 		continue_processing = false;
